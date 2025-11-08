@@ -22,7 +22,7 @@
     * { box-sizing:border-box; }
     html, body { height:100%; margin:0; }
     body {
-      padding:0 0 120px;
+      padding:0 0 40px;
       background:radial-gradient(ellipse at top, #0f1624 0%, #0a0e1a 100%);
       color:var(--text);
       font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Hiragino Sans GB,Microsoft YaHei,Noto Sans,Arial,sans-serif;
@@ -148,15 +148,6 @@
     .code::-webkit-scrollbar-thumb { background:rgba(79,143,255,.3); border-radius:4px; }
     .right { margin-left:auto; }
     .sep { height:1px; background:linear-gradient(90deg,transparent,rgba(79,143,255,.2),transparent); margin:16px 0; }
-    .footer {
-      position:fixed;
-      left:0;right:0;bottom:0;
-      background:rgba(10,14,26,.85);
-      backdrop-filter:blur(16px);
-      border-top:1px solid var(--border);
-      padding:14px 20px;
-      box-shadow:0 -4px 20px rgba(0,0,0,.3);
-    }
     .status-ok { color:var(--ok); font-weight:600; }
     .status-fail { color:var(--danger); font-weight:600; }
     .switch { position:relative; display:inline-block; width:50px; height:26px; }
@@ -272,7 +263,7 @@
           <button onclick="startAuth()">开始登录</button>
           <button class="btn-secondary" onclick="claimAuth()">等待授权并创建账号</button>
         </div>
-        <div class="field" style="margin-bottom:40px">
+        <div class="field">
           <label>登录信息</label>
           <pre class="code mono" id="auth_info">尚未开始</pre>
         </div>
@@ -309,12 +300,6 @@
     </div>
   </div>
 
-  <div class="footer">
-    <div class="container row">
-      <div class="muted">提示：在 .env 配置 OPENAI_KEYS 白名单；账号选择与 key 无关，将在“启用”的账号中随机选择。</div>
-      <div class="right muted">v2 OpenAI-Compatible</div>
-    </div>
-  </div>
 
 <script>
 function baseUrl(){ return document.getElementById('base').value.trim(); }
