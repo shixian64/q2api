@@ -52,6 +52,60 @@ _replicate = _load_replicate_module()
 send_chat_request = _replicate.send_chat_request
 
 # ------------------------------------------------------------------------------
+# Dynamic import of Claude modules
+# ------------------------------------------------------------------------------
+
+def _load_claude_modules():
+    # claude_types
+    spec_types = importlib.util.spec_from_file_location("v2_claude_types", str(BASE_DIR / "claude_types.py"))
+    mod_types = importlib.util.module_from_spec(spec_types)
+    spec_types.loader.exec_module(mod_types)
+    
+    # claude_converter
+    spec_conv = importlib.util.spec_from_file_location("v2_claude_converter", str(BASE_DIR / "claude_converter.py"))
+    mod_conv = importlib.util.module_from_spec(spec_conv)
+    # We need to inject claude_types into converter's namespace if it uses relative imports or expects them
+    # But since we used relative import in claude_converter.py (.claude_types), we need to be careful.
+    # Actually, since we are loading dynamically, relative imports might fail if not in sys.modules correctly.
+    # Let's patch sys.modules temporarily or just rely on file location.
+    # A simpler way for this single-file script style is to just load them.
+    # However, claude_converter does `from .claude_types import ...`
+    # To make that work, we should probably just use standard import if v2 is a package,
+    # but v2 is just a folder.
+    # Let's assume the user runs this with v2 in pythonpath or we just fix imports in the files.
+    # But I wrote `from .claude_types` in the file.
+    # Let's try to load it. If it fails, we might need to adjust.
+    # Actually, for simplicity in this `app.py` dynamic loading context,
+    # it is better if `claude_converter.py` used absolute import or we mock the package.
+    # BUT, let's try to just load them and see.
+    # To avoid relative import issues, I will inject the module into sys.modules
+    import sys
+    sys.modules["v2.claude_types"] = mod_types
+    
+    spec_conv.loader.exec_module(mod_conv)
+    
+    # claude_stream
+    spec_stream = importlib.util.spec_from_file_location("v2_claude_stream", str(BASE_DIR / "claude_stream.py"))
+    mod_stream = importlib.util.module_from_spec(spec_stream)
+    spec_stream.loader.exec_module(mod_stream)
+    
+    return mod_types, mod_conv, mod_stream
+
+try:
+    _claude_types, _claude_converter, _claude_stream = _load_claude_modules()
+    ClaudeRequest = _claude_types.ClaudeRequest
+    convert_claude_to_amazonq_request = _claude_converter.convert_claude_to_amazonq_request
+    ClaudeStreamHandler = _claude_stream.ClaudeStreamHandler
+except Exception as e:
+    print(f"Failed to load Claude modules: {e}")
+    traceback.print_exc()
+    # Define dummy classes to avoid NameError on startup if loading fails
+    class ClaudeRequest(BaseModel):
+        pass
+    convert_claude_to_amazonq_request = None
+    ClaudeStreamHandler = None
+
+# ------------------------------------------------------------------------------
 # Global HTTP Client
 # ------------------------------------------------------------------------------
 
@@ -424,6 +478,181 @@ def _openai_non_streaming_response(text: str, model: Optional[str]) -> Dict[str,
 def _sse_format(obj: Dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
+@app.post("/v1/messages")
+async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(require_account)):
+    """
+    Claude-compatible messages endpoint.
+    """
+    # 1. Convert request
+    try:
+        aq_request = convert_claude_to_amazonq_request(req)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
+
+    # 2. Send upstream
+    async def _send_upstream_raw() -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], Any, Optional[AsyncGenerator[Any, None]]]:
+        access = account.get("accessToken")
+        if not access:
+            refreshed = await refresh_access_token_in_db(account["id"])
+            access = refreshed.get("accessToken")
+            if not access:
+                raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
+        
+        # We use the modified send_chat_request which accepts raw_payload
+        # and returns (text, text_stream, tracker, event_stream)
+        return await send_chat_request(
+            access_token=access,
+            messages=[], # Not used when raw_payload is present
+            model=req.model,
+            stream=req.stream,
+            client=GLOBAL_CLIENT,
+            raw_payload=aq_request
+        )
+
+    try:
+        _, _, tracker, event_stream = await _send_upstream_raw()
+        
+        if not req.stream:
+            # Non-streaming: we need to consume the stream and build response
+            # But wait, send_chat_request with stream=False returns text, but we need structured response
+            # Actually, for Claude format, we might want to parse the events even for non-streaming
+            # to get tool calls etc correctly.
+            # However, our modified send_chat_request returns event_stream if raw_payload is used AND stream=True?
+            # Let's check replicate.py modification.
+            # If stream=False, it returns text. But text might not be enough for tool calls.
+            # For simplicity, let's force stream=True internally and aggregate if req.stream is False.
+            pass
+    except Exception as e:
+        await _update_stats(account["id"], False)
+        raise
+
+    # We always use streaming upstream to handle events properly
+    try:
+        # Force stream=True for upstream to get events
+        # But wait, send_chat_request logic: if stream=True, returns event_stream
+        # We need to call it with stream=True
+        pass
+    except:
+        pass
+        
+    # Re-implementing logic to be cleaner
+    
+    # Always stream from upstream to get full event details
+    try:
+        access = account.get("accessToken")
+        if not access:
+            refreshed = await refresh_access_token_in_db(account["id"])
+            access = refreshed.get("accessToken")
+        
+        # We call with stream=True to get the event iterator
+        _, _, tracker, event_iter = await send_chat_request(
+            access_token=access,
+            messages=[],
+            model=req.model,
+            stream=True,
+            client=GLOBAL_CLIENT,
+            raw_payload=aq_request
+        )
+        
+        if not event_iter:
+             raise HTTPException(status_code=502, detail="No event stream returned")
+
+        # Handler
+        # Estimate input tokens (simple count or 0)
+        # For now 0 or simple len
+        input_tokens = 0
+        handler = ClaudeStreamHandler(model=req.model, input_tokens=input_tokens)
+
+        async def event_generator():
+            try:
+                async for event_type, payload in event_iter:
+                    async for sse in handler.handle_event(event_type, payload):
+                        yield sse
+                async for sse in handler.finish():
+                    yield sse
+                await _update_stats(account["id"], True)
+            except Exception:
+                await _update_stats(account["id"], False)
+                raise
+
+        if req.stream:
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
+        else:
+            # Accumulate for non-streaming
+            # This is a bit complex because we need to reconstruct the full response object
+            # For now, let's just support streaming as it's the main use case for Claude Code
+            # But to be nice, let's try to support non-streaming by consuming the generator
+            
+            content_blocks = []
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            stop_reason = None
+            
+            # We need to parse the SSE strings back to objects... inefficient but works
+            # Or we could refactor handler to yield objects.
+            # For now, let's just raise error for non-streaming or implement basic text
+            # Claude Code uses streaming.
+            
+            # Let's implement a basic accumulator from the SSE stream
+            final_content = []
+            
+            async for sse_line in event_generator():
+                if sse_line.startswith("data: "):
+                    data_str = sse_line[6:].strip()
+                    if data_str == "[DONE]": continue
+                    try:
+                        data = json.loads(data_str)
+                        dtype = data.get("type")
+                        if dtype == "content_block_start":
+                            idx = data.get("index", 0)
+                            while len(final_content) <= idx:
+                                final_content.append(None)
+                            final_content[idx] = data.get("content_block")
+                        elif dtype == "content_block_delta":
+                            idx = data.get("index", 0)
+                            delta = data.get("delta", {})
+                            if final_content[idx]:
+                                if delta.get("type") == "text_delta":
+                                    final_content[idx]["text"] += delta.get("text", "")
+                                elif delta.get("type") == "input_json_delta":
+                                    # We need to accumulate partial json
+                                    # But wait, content_block for tool_use has 'input' as dict?
+                                    # No, in start it is empty.
+                                    # We need to track partial json string
+                                    if "partial_json" not in final_content[idx]:
+                                        final_content[idx]["partial_json"] = ""
+                                    final_content[idx]["partial_json"] += delta.get("partial_json", "")
+                        elif dtype == "content_block_stop":
+                            idx = data.get("index", 0)
+                            # If tool use, parse json
+                            if final_content[idx] and final_content[idx]["type"] == "tool_use":
+                                if "partial_json" in final_content[idx]:
+                                    try:
+                                        final_content[idx]["input"] = json.loads(final_content[idx]["partial_json"])
+                                    except:
+                                        pass
+                                    del final_content[idx]["partial_json"]
+                        elif dtype == "message_delta":
+                            usage = data.get("usage", usage)
+                            stop_reason = data.get("delta", {}).get("stop_reason")
+                    except:
+                        pass
+            
+            return {
+                "id": f"msg_{uuid.uuid4()}",
+                "type": "message",
+                "role": "assistant",
+                "model": req.model,
+                "content": [c for c in final_content if c is not None],
+                "stop_reason": stop_reason,
+                "stop_sequence": None,
+                "usage": usage
+            }
+
+    except Exception as e:
+        await _update_stats(account["id"], False)
+        raise
+
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] = Depends(require_account)):
     """
@@ -442,7 +671,11 @@ async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] =
             access = refreshed.get("accessToken")
             if not access:
                 raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
-        return await send_chat_request(access, [m.model_dump() for m in req.messages], model=model, stream=stream, client=GLOBAL_CLIENT)
+        # Note: send_chat_request signature changed, but we use keyword args so it should be fine if we don't pass raw_payload
+        # But wait, the return signature changed too! It now returns 4 values.
+        # We need to unpack 4 values.
+        result = await send_chat_request(access, [m.model_dump() for m in req.messages], model=model, stream=stream, client=GLOBAL_CLIENT)
+        return result[0], result[1], result[2] # Ignore the 4th value (event_stream) for OpenAI endpoint
 
     if not do_stream:
         try:

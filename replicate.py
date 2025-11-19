@@ -5,6 +5,24 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Iterator, List, AsyncGenerator, Any
 import struct
 import httpx
+import importlib.util
+
+def _load_claude_parser():
+    """Dynamically load claude_parser module."""
+    base_dir = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location("v2_claude_parser", str(base_dir / "claude_parser.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+try:
+    _parser = _load_claude_parser()
+    EventStreamParser = _parser.EventStreamParser
+    extract_event_info = _parser.extract_event_info
+except Exception as e:
+    print(f"Warning: Failed to load claude_parser: {e}")
+    EventStreamParser = None
+    extract_event_info = None
 
 class StreamTracker:
     def __init__(self):
@@ -198,17 +216,28 @@ async def send_chat_request(
     model: Optional[str] = None,
     stream: bool = False,
     timeout: Tuple[int,int] = (15,300),
-    client: Optional[httpx.AsyncClient] = None
-) -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], StreamTracker]:
+    client: Optional[httpx.AsyncClient] = None,
+    raw_payload: Optional[Dict[str, Any]] = None
+) -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], StreamTracker, Optional[AsyncGenerator[Any, None]]]:
     url, headers_from_log, body_json = load_template()
     headers_from_log["amz-sdk-invocation-id"] = str(uuid.uuid4())
-    try:
-        body_json["conversationState"]["conversationId"] = str(uuid.uuid4())
-    except Exception:
-        pass
-    history_text = openai_messages_to_text(messages)
-    inject_history(body_json, history_text)
-    inject_model(body_json, model)
+    
+    if raw_payload:
+        # Use raw payload if provided (for Claude API)
+        body_json = raw_payload
+        # Ensure conversationId is set if missing
+        if "conversationState" in body_json and "conversationId" not in body_json["conversationState"]:
+             body_json["conversationState"]["conversationId"] = str(uuid.uuid4())
+    else:
+        # Standard OpenAI-compatible logic
+        try:
+            body_json["conversationState"]["conversationId"] = str(uuid.uuid4())
+        except Exception:
+            pass
+        history_text = openai_messages_to_text(messages)
+        inject_history(body_json, history_text)
+        inject_model(body_json, model)
+
     payload_str = json.dumps(body_json, ensure_ascii=False)
     headers = _merge_headers(headers_from_log, access_token)
     
@@ -246,37 +275,54 @@ async def send_chat_request(
         parser = AwsEventStreamParser()
         tracker = StreamTracker()
         
-        async def _iter_text() -> AsyncGenerator[str, None]:
+        async def _iter_events() -> AsyncGenerator[Any, None]:
             try:
-                async for chunk in resp.aiter_bytes():
-                    if not chunk:
-                        continue
-                    events = parser.feed(chunk)
-                    for _ev_headers, payload in events:
-                        parsed = _try_decode_event_payload(payload)
-                        if parsed is not None:
-                            text = _extract_text_from_event(parsed)
-                            if isinstance(text, str) and text:
-                                yield text
-                        else:
-                            try:
-                                txt = payload.decode("utf-8", errors="ignore")
-                                if txt:
-                                    yield txt
-                            except Exception:
-                                pass
+                if EventStreamParser and extract_event_info:
+                    # Use proper EventStreamParser
+                    async def byte_gen():
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                yield chunk
+                    
+                    async for message in EventStreamParser.parse_stream(byte_gen()):
+                        event_info = extract_event_info(message)
+                        if event_info:
+                            event_type = event_info.get('event_type')
+                            payload = event_info.get('payload')
+                            if event_type and payload:
+                                yield (event_type, payload)
+                else:
+                    # Fallback to old parser
+                    async for chunk in resp.aiter_bytes():
+                        if not chunk:
+                            continue
+                        events = parser.feed(chunk)
+                        for ev_headers, payload in events:
+                            parsed = _try_decode_event_payload(payload)
+                            if parsed is not None:
+                                event_type = None
+                                if ":event-type" in ev_headers:
+                                    event_type = ev_headers[":event-type"]
+                                yield (event_type, parsed)
             except Exception:
-                # If we have already yielded content, suppress the error to allow partial success.
-                # If no content has been yielded yet (tracker.has_content is False), re-raise.
                 if not tracker.has_content:
                     raise
             finally:
                 await resp.aclose()
                 if local_client:
                     await client.aclose()
+
+        async def _iter_text() -> AsyncGenerator[str, None]:
+            async for event_type, parsed in _iter_events():
+                text = _extract_text_from_event(parsed)
+                if isinstance(text, str) and text:
+                    yield text
         
         if stream:
-            return None, tracker.track(_iter_text()), tracker
+            # If raw_payload is used, we might want the raw event stream
+            if raw_payload:
+                return None, None, tracker, _iter_events()
+            return None, tracker.track(_iter_text()), tracker, None
         else:
             buf = []
             try:
@@ -285,7 +331,7 @@ async def send_chat_request(
             finally:
                 # Ensure cleanup if not streamed
                 pass
-            return "".join(buf), None, tracker
+            return "".join(buf), None, tracker, None
 
     except Exception:
         if local_client and client:
