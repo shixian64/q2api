@@ -1,25 +1,44 @@
-# Amazon Q to OpenAI API Bridge
+# Amazon Q to API Bridge
 
-将 Amazon Q Developer 转换为 OpenAI 兼容的 API 服务，支持流式和非流式响应。
+将 Amazon Q Developer 转换为兼容 OpenAI 和 Claude API 的服务，支持多账号管理、流式响应和智能负载均衡。
+
+**项目地址：**
+- GitHub: https://github.com/CassiopeiaCode/q2api
+- Codeberg: https://codeberg.org/Korieu/amazonq2api
+
+**致谢：**
+- 感谢 [amq2api](https://github.com/mucsbr/amq2api) 项目提供的 Claude 消息格式转换参考
 
 ## ✨ 核心特性
 
-- **OpenAI 兼容接口** - 完全兼容 OpenAI Chat Completions API（`/v1/chat/completions`）
-- **账号管理系统** - 支持多账号管理，启用/禁用控制，自动令牌刷新
-- **智能统计监控** - 自动统计成功/失败次数，错误超阈值自动禁用账号
+### API 兼容性
+- **OpenAI Chat Completions API** - 完全兼容 `/v1/chat/completions` 端点
+- **Claude Messages API** - 完全兼容 `/v1/messages` 端点，支持流式和非流式
+- **Tool Use 支持** - 完整支持 Claude 格式的工具调用和结果返回
+- **System Prompt** - 支持系统提示词和多模态内容（文本、图片）
+
+### 账号管理
+- **多账号支持** - 管理多个 Amazon Q 账号，灵活启用/禁用
+- **自动令牌刷新** - 后台定时刷新过期令牌，请求时自动重试
+- **智能统计** - 自动统计成功/失败次数，错误超阈值自动禁用
 - **设备授权登录** - 通过 URL 快速登录并自动创建账号（5分钟超时）
-- **智能负载均衡** - 从启用的账号中随机选择，实现简单的负载分配
+
+### 负载与监控
+- **随机负载均衡** - 从启用的账号中随机选择，均衡分配负载
+- **健康检查** - 实时监控服务状态
+- **Web 控制台** - 美观的前端界面，支持账号管理和 Chat 测试
+
+### 网络与安全
 - **HTTP 代理支持** - 可配置代理服务器，支持所有 HTTP 请求
 - **API Key 白名单** - 可选的访问控制，支持开发模式
-- **现代化前端** - 美观的 Web 控制台，标签页布局，支持账号管理和 Chat 测试
-- **自动重试机制** - Token 过期时自动刷新并重试请求
+- **持久化存储** - SQLite 数据库存储账号信息
 
 ## 🚀 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-# 创建虚拟环境
+# 创建虚拟环境（推荐）
 python -m venv .venv
 
 # Windows
@@ -37,29 +56,45 @@ pip install -r requirements.txt
 # 复制示例配置
 cp .env.example .env
 
-# 编辑 .env 文件
-# OPENAI_KEYS="key1,key2,key3"  # 可选，留空则为开发模式
-# MAX_ERROR_COUNT=100            # 错误次数阈值
-# HTTP_PROXY="http://127.0.0.1:7890"  # HTTP代理（可选）
+# 编辑 .env 文件配置以下选项：
 ```
 
-**配置说明：**
-- `OPENAI_KEYS` 为空或未设置：开发模式，不校验 Authorization
+**.env 配置说明：**
+
+```bash
+# OpenAI 风格 API Key 白名单（仅用于授权，与账号无关）
+# 多个用逗号分隔，例如：OPENAI_KEYS="key1,key2,key3"
+# 留空则为开发模式，不校验 Authorization
+OPENAI_KEYS=""
+
+# 出错次数阈值，超过此值自动禁用账号
+MAX_ERROR_COUNT=100
+
+# HTTP代理设置（留空不使用代理）
+# 例如：HTTP_PROXY="http://127.0.0.1:7890"
+HTTP_PROXY=""
+```
+
+**配置要点：**
+- `OPENAI_KEYS` 为空：开发模式，不校验 Authorization
 - `OPENAI_KEYS` 设置后：仅白名单中的 key 可访问 API
 - API Key 仅用于访问控制，不映射到特定账号
-- `MAX_ERROR_COUNT`：账号连续失败次数超过此值将自动禁用（默认100）
-- `HTTP_PROXY`：HTTP代理地址，留空则不使用代理
+- 账号选择策略：从所有启用账号中随机选择
 
 ### 3. 启动服务
 
 ```bash
+# 开发模式（自动重载）
 python -m uvicorn app:app --reload --port 8000
+
+# 生产模式
+python -m uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 访问：
-- 🏠 Web 控制台：http://localhost:8000/ （需要存在 `frontend/index.html`，否则将返回 404）
+- 🏠 Web 控制台：http://localhost:8000/
 - 💚 健康检查：http://localhost:8000/healthz
-- 📘 API 文档（Swagger）：http://localhost:8000/docs
+- 📘 API 文档：http://localhost:8000/docs
 
 ## 📖 使用指南
 
@@ -67,21 +102,53 @@ python -m uvicorn app:app --reload --port 8000
 
 #### 方式一：Web 控制台（推荐）
 
-访问 http://localhost:8000/ 使用可视化界面管理账号：
-- 查看所有账号及状态
+访问 http://localhost:8000/ 使用可视化界面：
+- 查看所有账号及详细状态
+- URL 登录（设备授权）快速添加账号
 - 创建/删除/编辑账号
-- 启用/禁用账号
-- 刷新 Token
-- URL 登录（设备授权）
+- 启用/禁用账号切换
+- 手动刷新 Token
+- Chat 功能测试
 
-#### 方式二：REST API
+#### 方式二：URL 登录（最简单）
+
+快速添加账号的推荐方式：
+
+1. **启动登录流程**
+```bash
+curl -X POST http://localhost:8000/v2/auth/start \
+  -H "Content-Type: application/json" \
+  -d '{"label": "我的账号", "enabled": true}'
+```
+
+返回示例：
+```json
+{
+  "authId": "xxx-xxx-xxx",
+  "verificationUriComplete": "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-1234",
+  "userCode": "ABCD-1234",
+  "expiresIn": 600,
+  "interval": 1
+}
+```
+
+2. **在浏览器中打开 `verificationUriComplete` 完成登录**
+
+3. **等待并创建账号**（最多5分钟）
+```bash
+curl -X POST http://localhost:8000/v2/auth/claim/{authId}
+```
+
+成功后自动创建并启用账号，立即可用。
+
+#### 方式三：REST API 手动管理
 
 **创建账号**
 ```bash
 curl -X POST http://localhost:8000/v2/accounts \
   -H "Content-Type: application/json" \
   -d '{
-    "label": "我的账号",
+    "label": "手动创建的账号",
     "clientId": "your-client-id",
     "clientSecret": "your-client-secret",
     "refreshToken": "your-refresh-token",
@@ -94,7 +161,7 @@ curl -X POST http://localhost:8000/v2/accounts \
 curl http://localhost:8000/v2/accounts
 ```
 
-**更新账号（切换启用状态）**
+**更新账号**
 ```bash
 curl -X PATCH http://localhost:8000/v2/accounts/{account_id} \
   -H "Content-Type: application/json" \
@@ -110,37 +177,6 @@ curl -X POST http://localhost:8000/v2/accounts/{account_id}/refresh
 ```bash
 curl -X DELETE http://localhost:8000/v2/accounts/{account_id}
 ```
-
-### URL 登录（设备授权）
-
-快速添加账号的最简单方式：
-
-1. **启动登录流程**
-```bash
-curl -X POST http://localhost:8000/v2/auth/start \
-  -H "Content-Type: application/json" \
-  -d '{"label": "新账号", "enabled": true}'
-```
-
-返回：
-```json
-{
-  "authId": "xxx",
-  "verificationUriComplete": "https://...",
-  "userCode": "ABCD-1234",
-  "expiresIn": 600,
-  "interval": 1
-}
-```
-
-2. **在浏览器中打开 `verificationUriComplete` 完成登录**
-
-3. **等待并创建账号**（最多5分钟）
-```bash
-curl -X POST http://localhost:8000/v2/auth/claim/{authId}
-```
-
-成功后自动创建并启用账号。
 
 ### OpenAI 兼容 API
 
@@ -195,6 +231,183 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+### Claude Messages API
+
+本项目完整支持 Claude Messages API 格式，包括流式响应、工具调用、多模态内容等。
+
+#### 基础文本对话
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d '{
+    "model": "claude-sonnet-4.5",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "你好"}
+    ]
+  }'
+```
+
+#### 流式响应
+
+```bash
+curl -N -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d '{
+    "model": "claude-sonnet-4.5",
+    "max_tokens": 1024,
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "写一首诗"}
+    ]
+  }'
+```
+
+#### 使用 System Prompt
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d '{
+    "model": "claude-sonnet-4.5",
+    "max_tokens": 1024,
+    "system": "你是一个专业的Python程序员",
+    "messages": [
+      {"role": "user", "content": "如何实现快速排序？"}
+    ]
+  }'
+```
+
+#### Tool Use（工具调用）
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d '{
+    "model": "claude-sonnet-4.5",
+    "max_tokens": 1024,
+    "tools": [
+      {
+        "name": "get_weather",
+        "description": "获取指定城市的天气信息",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string", "description": "城市名称"}
+          },
+          "required": ["city"]
+        }
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "北京今天天气怎么样？"}
+    ]
+  }'
+```
+
+#### Tool Result（返回工具结果）
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d '{
+    "model": "claude-sonnet-4.5",
+    "max_tokens": 1024,
+    "tools": [...],
+    "messages": [
+      {"role": "user", "content": "北京今天天气怎么样？"},
+      {
+        "role": "assistant",
+        "content": [
+          {"type": "text", "text": "我来查询北京的天气。"},
+          {
+            "type": "tool_use",
+            "id": "toolu_xxx",
+            "name": "get_weather",
+            "input": {"city": "北京"}
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_xxx",
+            "content": "北京今天晴，温度15-25℃"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+#### 多模态（图片）
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-api-key" \
+  -d '{
+    "model": "claude-sonnet-4.5",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "这张图片里有什么？"},
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/jpeg",
+              "data": "/9j/4AAQSkZJRg..."
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+#### Python SDK 示例
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://localhost:8000/v1",
+    api_key="your-api-key"
+)
+
+# 基础对话
+message = client.messages.create(
+    model="claude-sonnet-4.5",
+    max_tokens=1024,
+    messages=[
+        {"role": "user", "content": "你好"}
+    ]
+)
+print(message.content[0].text)
+
+# 流式响应
+with client.messages.stream(
+    model="claude-sonnet-4.5",
+    max_tokens=1024,
+    messages=[
+        {"role": "user", "content": "写一首诗"}
+    ]
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
 ## 🔐 授权与账号选择
 
 ### 授权机制
@@ -203,95 +416,164 @@ print(response.choices[0].message.content)
 
 ### 账号选择策略
 - 从所有 `enabled=1` 的账号中**随机选择**
-- API Key 不映射到特定账号
+- API Key 不映射到特定账号（与 AWS 账号解耦）
 - 无可用账号时返回 401
 
-### Token 刷新
-- 请求时若账号缺少 accessToken，自动刷新
-- 上游返回 401/403 时，自动刷新并重试一次
-- 可手动调用刷新接口
+### Token 自动刷新
+- **后台刷新**：每5分钟检查一次，超过25分钟未刷新的令牌自动刷新
+- **请求时刷新**：若账号缺少 accessToken，自动刷新后重试
+- **手动刷新**：支持通过 API 或 Web 控制台手动刷新
+
+## 🏗️ 架构设计
+
+### 核心模块
+
+#### 1. app.py - FastAPI 主应用
+- RESTful API 端点定义
+- 账号管理（CRUD）
+- 设备授权流程
+- OpenAI 和 Claude API 端点
+- SQLite 数据库操作
+- 后台任务（令牌刷新）
+
+#### 2. replicate.py - Amazon Q 请求复刻
+- 加载请求模板
+- 构建上游请求
+- AWS Event Stream 解析
+- 流式响应处理
+
+#### 3. Claude 格式转换模块
+
+**claude_types.py** - 类型定义
+- `ClaudeRequest` - Claude API 请求格式
+- `ClaudeMessage` - 消息格式
+- `ClaudeTool` - 工具定义
+
+**claude_converter.py** - 请求转换
+- Claude 到 Amazon Q 格式转换
+- Tool 定义转换
+- 消息历史处理
+- 多模态内容转换
+
+**claude_parser.py** - 事件解析
+- AWS Event Stream 二进制解析
+- 事件头部解析
+- JSON payload 提取
+
+**claude_stream.py** - 流式响应处理
+- Amazon Q 事件到 Claude SSE 格式转换
+- Tool Use 状态管理
+- 内容块流式输出
+
+#### 4. auth_flow.py - 设备授权
+- OIDC 客户端注册
+- 设备授权流程
+- 令牌轮询和获取
+
+### 消息流程
+
+```
+用户请求
+  │
+  ├─→ OpenAI API (/v1/chat/completions)
+  │     │
+  │     └─→ 简单格式转换 → Amazon Q
+  │
+  └─→ Claude API (/v1/messages)
+        │
+        ├─→ claude_converter.py
+        │     ├─ 转换 System Prompt
+        │     ├─ 转换 Tools
+        │     ├─ 转换 Messages
+        │     └─ 转换多模态内容
+        │
+        ├─→ replicate.py
+        │     ├─ 发送到 Amazon Q
+        │     └─ 解析 Event Stream
+        │
+        └─→ claude_stream.py
+              ├─ 事件转 Claude SSE
+              ├─ 处理 Tool Use
+              └─ 返回流式响应
+```
 
 ## 📁 项目结构
 
 ```
 .
 ├── app.py                          # FastAPI 主应用
-├── auth_flow.py                    # 设备授权登录
 ├── replicate.py                    # Amazon Q 请求复刻
+├── auth_flow.py                    # 设备授权登录
+├── claude_types.py                 # Claude API 类型定义
+├── claude_converter.py             # Claude 到 Amazon Q 转换
+├── claude_parser.py                # Event Stream 解析
+├── claude_stream.py                # Claude SSE 流式处理
 ├── requirements.txt                # Python 依赖
 ├── .env.example                    # 环境变量示例
 ├── .gitignore                      # Git 忽略规则
 ├── data.sqlite3                    # SQLite 数据库（自动创建）
 ├── templates/
-│   └── streaming_request.json      # 请求模板
+│   └── streaming_request.json      # Amazon Q 请求模板
 └── frontend/
-    └── index.html                  # Web 控制台入口
+    └── index.html                  # Web 控制台
 ```
 
 ## 🛠️ 技术栈
 
-- **后端**: FastAPI + Python 3.8+
-- **数据库**: SQLite3
-- **前端**: 纯 HTML/CSS/JavaScript
+- **后端框架**: FastAPI + Python 3.8+
+- **数据库**: SQLite3 + aiosqlite
+- **HTTP 客户端**: httpx（支持异步和代理）
+- **前端**: 纯 HTML/CSS/JavaScript（无依赖）
 - **认证**: AWS OIDC 设备授权流程
 
 ## 🔧 高级配置
 
 ### 环境变量
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `OPENAI_KEYS` | API Key 白名单（逗号分隔） | 空（开发模式） |
-| `MAX_ERROR_COUNT` | 错误次数阈值，超过自动禁用账号 | 100 |
-| `HTTP_PROXY` | HTTP代理地址（如 http://127.0.0.1:7890） | 空（不使用代理） |
+| 变量 | 说明 | 默认值 | 示例 |
+|------|------|--------|------|
+| `OPENAI_KEYS` | API Key 白名单（逗号分隔） | 空（开发模式） | `"key1,key2"` |
+| `MAX_ERROR_COUNT` | 错误次数阈值 | 100 | `50` |
+| `HTTP_PROXY` | HTTP代理地址 | 空 | `"http://127.0.0.1:7890"` |
 
 ### 数据库结构
 
 ```sql
 CREATE TABLE accounts (
-    id TEXT PRIMARY KEY,
-    label TEXT,
-    clientId TEXT,
-    clientSecret TEXT,
-    refreshToken TEXT,
-    accessToken TEXT,
-    other TEXT,                    -- JSON 格式的额外信息
-    last_refresh_time TEXT,
-    last_refresh_status TEXT,
-    created_at TEXT,
-    updated_at TEXT,
-    enabled INTEGER DEFAULT 1,     -- 1=启用, 0=禁用
-    error_count INTEGER DEFAULT 0, -- 连续错误次数
-    success_count INTEGER DEFAULT 0 -- 成功请求次数
+    id TEXT PRIMARY KEY,                -- UUID
+    label TEXT,                         -- 账号标签
+    clientId TEXT,                      -- OIDC 客户端 ID
+    clientSecret TEXT,                  -- OIDC 客户端密钥
+    refreshToken TEXT,                  -- 刷新令牌
+    accessToken TEXT,                   -- 访问令牌
+    other TEXT,                         -- JSON 格式的额外信息
+    last_refresh_time TEXT,             -- 最后刷新时间
+    last_refresh_status TEXT,           -- 最后刷新状态
+    created_at TEXT,                    -- 创建时间
+    updated_at TEXT,                    -- 更新时间
+    enabled INTEGER DEFAULT 1,          -- 1=启用, 0=禁用
+    error_count INTEGER DEFAULT 0,      -- 连续错误次数
+    success_count INTEGER DEFAULT 0     -- 成功请求次数
 );
 ```
 
 ### 账号统计与自动禁用
 
-系统会自动统计每个账号的请求结果：
+系统自动统计每个账号的请求结果：
 - **成功**：返回至少1个有效字符，`success_count+1`，`error_count`重置为0
 - **失败**：未返回有效字符或出错，`error_count+1`
-- **自动禁用**：当`error_count >= MAX_ERROR_COUNT`时，账号自动设置为`enabled=0`
+- **自动禁用**：当 `error_count >= MAX_ERROR_COUNT` 时，账号自动设置为 `enabled=0`
 
 这确保了有问题的账号不会持续影响服务质量。
 
-## 🐛 故障排查
+### 后台任务
 
-### 401 Unauthorized
-- 检查 `OPENAI_KEYS` 配置
-- 确认至少有一个 `enabled=1` 的账号
-- 验证账号的 clientId/clientSecret/refreshToken 正确
+**Token 自动刷新**
+- 每5分钟扫描一次所有启用的账号
+- 超过25分钟未刷新的令牌自动刷新
+- 刷新失败时记录状态和时间
 
-### Token 刷新失败
-- 检查网络连接
-- 验证 refreshToken 是否过期
-- 查看账号的 `last_refresh_status` 字段
-
-### 无响应/超时
-- 检查 Amazon Q 服务可达性
-- 查看服务日志排查错误
-
-## 📝 API 端点
+## 📝 完整 API 端点列表
 
 ### 账号管理
 - `POST /v2/accounts` - 创建账号
@@ -304,14 +586,144 @@ CREATE TABLE accounts (
 ### 设备授权
 - `POST /v2/auth/start` - 启动登录流程
 - `GET /v2/auth/status/{authId}` - 查询登录状态
-- `POST /v2/auth/claim/{authId}` - 等待并创建账号
+- `POST /v2/auth/claim/{authId}` - 等待并创建账号（最多5分钟）
 
 ### OpenAI 兼容
 - `POST /v1/chat/completions` - Chat Completions API
 
+### Claude 兼容
+- `POST /v1/messages` - Messages API（支持流式、工具调用、多模态）
+
 ### 其他
 - `GET /` - Web 控制台
 - `GET /healthz` - 健康检查
+- `GET /docs` - API 文档（Swagger UI）
+
+## 🐛 故障排查
+
+### 401 Unauthorized
+**可能原因：**
+- API Key 不在 `OPENAI_KEYS` 白名单中
+- 没有启用的账号（`enabled=1`）
+- 账号的 clientId/clientSecret/refreshToken 不正确
+
+**解决方法：**
+1. 检查 `.env` 中的 `OPENAI_KEYS` 配置
+2. 访问 `/v2/accounts` 确认至少有一个启用的账号
+3. 验证账号凭据是否正确
+
+### Token 刷新失败
+**可能原因：**
+- refreshToken 已过期
+- 网络连接问题
+- OIDC 服务不可达
+
+**解决方法：**
+1. 查看账号的 `last_refresh_status` 字段
+2. 检查网络连接和代理配置
+3. 删除旧账号，通过 URL 登录重新添加
+
+### 无响应/超时
+**可能原因：**
+- Amazon Q 服务不可达
+- 网络问题
+- 账号被限流
+
+**解决方法：**
+1. 检查 Amazon Q 服务状态
+2. 查看服务日志排查错误
+3. 尝试手动刷新令牌
+4. 检查账号的 `error_count` 是否过高
+
+### Claude API 工具调用问题
+**可能原因：**
+- 工具定义格式不正确
+- Tool Result 格式不匹配
+- 多轮对话历史处理错误
+
+**解决方法：**
+1. 参考文档中的示例格式
+2. 确保 `tool_use_id` 正确对应
+3. 检查消息历史中的 role 顺序
+
+## 🚀 部署建议
+
+### 生产环境
+
+```bash
+# 使用多个 worker 提高并发性能
+python -m uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4
+
+# 或使用 gunicorn
+pip install gunicorn
+gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+```
+
+### Docker 部署
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+```bash
+docker build -t q2api .
+docker run -p 8000:8000 -v $(pwd)/data.sqlite3:/app/data.sqlite3 q2api
+```
+
+### Nginx 反向代理
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        
+        # SSE 支持
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
+```
+
+## 📊 性能优化
+
+### 连接池配置
+代码中已配置 httpx 连接池：
+- `max_keepalive_connections`: 100
+- `max_connections`: 200
+- 超时设置：连接15秒，读取300秒
+
+### 并发处理
+- 使用异步 I/O（asyncio + FastAPI）
+- 数据库使用 aiosqlite 异步操作
+- 全局 HTTP 客户端复用
+
+### 数据库优化
+- WAL 模式提高并发读写性能
+- 索引优化（主键索引）
+- 定期清理过期数据
+
+## 🔒 安全建议
+
+1. **生产环境必须配置 `OPENAI_KEYS`**
+2. **使用 HTTPS 反向代理（Nginx + Let's Encrypt）**
+3. **定期备份 `data.sqlite3` 数据库**
+4. **限制数据库文件权限**（仅应用可读写）
+5. **监控错误日志，及时处理异常账号**
+6. **配置防火墙规则，限制访问来源**
 
 ## 📄 许可证
 
@@ -320,3 +732,16 @@ CREATE TABLE accounts (
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+**贡献指南：**
+1. Fork 项目
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
+
+## 🙏 致谢
+
+- [amq2api](https://github.com/mucsbr/amq2api) - Claude 消息格式转换参考
+- FastAPI - 现代 Python Web 框架
+- Amazon Q Developer - 底层 AI 服务
