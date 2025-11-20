@@ -3,8 +3,29 @@ import logging
 import importlib.util
 from pathlib import Path
 from typing import AsyncGenerator, Optional, Dict, Any, List, Set
+import tiktoken
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------------------
+# Tokenizer
+# ------------------------------------------------------------------------------
+
+try:
+    # cl100k_base is used by gpt-4, gpt-3.5-turbo, text-embedding-ada-002
+    ENCODING = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    ENCODING = None
+
+def count_tokens(text: str) -> int:
+    """Counts tokens with tiktoken."""
+    if not text or not ENCODING:
+        return 0
+    return len(ENCODING.encode(text))
+
+# ------------------------------------------------------------------------------
+# Dynamic Loader
+# ------------------------------------------------------------------------------
 
 def _load_claude_parser():
     """Dynamically load claude_parser module."""
@@ -159,6 +180,7 @@ class ClaudeStreamHandler:
         full_text = "".join(self.response_buffer)
         full_tool_input = "".join(self.all_tool_inputs)
         # Simple approximation: 4 chars per token
-        output_tokens = max(1, (len(full_text) + len(full_tool_input)) // 4)
+        # output_tokens = max(1, (len(full_text) + len(full_tool_input)) // 4)
+        output_tokens = count_tokens(full_text) + count_tokens(full_tool_input)
 
         yield build_message_stop(self.input_tokens, output_tokens, "end_turn")
