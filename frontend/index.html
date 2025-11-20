@@ -422,7 +422,7 @@ function createAccountCard(acc) {
   return card;
 }
 
-// Virtual scroll implementation
+// Virtual scroll implementation with auto height adjustment
 class VirtualScroll {
   constructor(container, items, itemHeight, bufferSize = 3) {
     this.container = container;
@@ -432,6 +432,8 @@ class VirtualScroll {
     this.visibleStart = 0;
     this.visibleEnd = 0;
     this.renderedItems = new Map();
+    this.measuredHeights = new Map();
+    this.heightAdjusted = false;
     
     this.viewport = document.createElement('div');
     this.viewport.className = 'list-viewport';
@@ -444,10 +446,54 @@ class VirtualScroll {
     
     this.container.addEventListener('scroll', () => this.onScroll());
     this.render();
+    
+    // Auto-measure after first render
+    requestAnimationFrame(() => this.measureAndAdjust());
   }
   
   onScroll() {
     requestAnimationFrame(() => this.render());
+  }
+  
+  measureAndAdjust() {
+    let maxHeight = 0;
+    let needsAdjustment = false;
+    
+    // Measure all currently rendered items
+    for (const [idx, element] of this.renderedItems.entries()) {
+      const rect = element.getBoundingClientRect();
+      const actualHeight = rect.height + 12; // +12 for gap
+      this.measuredHeights.set(idx, actualHeight);
+      
+      if (actualHeight > maxHeight) {
+        maxHeight = actualHeight;
+      }
+      
+      // Check if actual height exceeds estimated height
+      if (actualHeight > this.itemHeight * 0.95) {
+        needsAdjustment = true;
+      }
+    }
+    
+    // Auto-adjust if needed
+    if (needsAdjustment && maxHeight > this.itemHeight) {
+      console.log(`[VirtualScroll] 检测到重影，调整高度: ${this.itemHeight}px -> ${Math.ceil(maxHeight)}px`);
+      this.itemHeight = Math.ceil(maxHeight);
+      this.heightAdjusted = true;
+      
+      // Re-render with new height
+      this.reposition();
+    }
+  }
+  
+  reposition() {
+    // Reposition all rendered items with new height
+    for (const [idx, element] of this.renderedItems.entries()) {
+      element.style.top = (idx * this.itemHeight) + 'px';
+    }
+    
+    // Update viewport height
+    this.viewport.style.height = (this.items.length * this.itemHeight) + 'px';
   }
   
   render() {
@@ -480,6 +526,8 @@ class VirtualScroll {
     
     // Add items in visible range
     const fragment = document.createDocumentFragment();
+    let newItemsAdded = false;
+    
     for (let i = bufferedStart; i < bufferedEnd; i++) {
       if (!this.renderedItems.has(i)) {
         const item = createAccountCard(this.items[i]);
@@ -489,24 +537,34 @@ class VirtualScroll {
         item.style.right = '0';
         this.renderedItems.set(i, item);
         fragment.appendChild(item);
+        newItemsAdded = true;
       }
     }
     
     if (fragment.childNodes.length > 0) {
       this.content.appendChild(fragment);
+      
+      // Measure new items after they're added to DOM
+      if (newItemsAdded && !this.heightAdjusted) {
+        requestAnimationFrame(() => this.measureAndAdjust());
+      }
     }
   }
   
   update(items) {
     this.items = items;
     this.renderedItems.clear();
+    this.measuredHeights.clear();
+    this.heightAdjusted = false;
     this.content.innerHTML = '';
     this.render();
+    requestAnimationFrame(() => this.measureAndAdjust());
   }
   
   destroy() {
     this.container.removeEventListener('scroll', this.onScroll);
     this.renderedItems.clear();
+    this.measuredHeights.clear();
   }
 }
 
